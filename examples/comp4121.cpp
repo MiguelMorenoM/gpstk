@@ -76,6 +76,103 @@ using namespace vdraw;
 using namespace vplot;
 
 
+int power2(int exponent) {
+  return (1 << exponent);
+}
+
+class ComboContainer {
+  public:
+    //ComboContainer();
+    
+    //vector< map< SatID, Vector<double> > > prnVec;
+    
+    // List of all satellite prns
+    vector< SatID > prns;
+    vector< int > sol_ids;
+
+    int pushSolID(int id) {
+      std::vector< int >::iterator it;
+      if ((it = std::find(sol_ids.begin(), sol_ids.end(), id))==sol_ids.end())
+      {
+        sol_ids.push_back(id);
+        return 1;
+      } else return 0;
+    }
+
+    // from the above list of prns we determine all combination IDs
+    int getComboID(vector< SatID > in_prns, vector< bool > use_sv) {
+      vector< int > powers;
+      // are all prns in the prns vector?
+      for (int i=0;i<in_prns.size();i++) {
+        std::vector< SatID >::iterator it;
+	int power;
+        if ((it = std::find(prns.begin(), prns.end(), in_prns[i]))!=prns.end())
+	   power = distance(prns.begin(),it);
+	else {
+	   power = prns.size();
+	   prns.push_back(in_prns[i]);
+	}
+	powers.push_back(power);
+      }
+      // now loop through the bool list of SVs used in this combo
+      // this could be done in the above loop for efficiency but
+      // who cares right now.
+      int id=0;
+      for (int i=0;i<use_sv.size(); i++) 
+        if (use_sv[i]) id += power2(powers[i]);
+
+      pushSolID(id); // who cares about return value right now.
+      return id;
+    }
+
+    
+
+    // by epoch time series of combo solutions.
+    vector< map< int, Vector< double > > > ComboSolutions;
+
+    int newEpoch() {
+      ComboSolutions.push_back(map< int, Vector< double > >);
+    }
+
+    void storeSolution(int id, Vector< double > sol) {
+      ComboSolutions[ComboSolutions.size()-1][id]=sol;
+    }
+
+    int getTimeSeries(int id, int epoch, int length, vector< Vector<double> > & ts) {
+      ts.clear();
+      // if an unbroken time series of this SV id exists, return 1.
+      // otherwise return 0;
+
+      if (ComboSolutions.size() < epoch || epoch - length + 1 < 0) return 0;
+      while (length > 0) {
+        // get the solution of SV[id] for epoch
+	if (ComboSolutions[epoch][id].size() == 0) return 0; // this creates an entry (thus memory management) but is faster than catching an exception. Blame STL for this mess.
+	ts.push_back(ComboSolutions[epoch][id]);
+	epoch--;
+        length--;
+      }
+      return 1;
+    }
+};
+
+
+void debugPrintCombos(PRSolution3& raimSolver) {
+               // now print all the little solutions
+               // debug out FIXME print solutions of all combos
+               for (int q=0; q<raimSolver.ComboSolution.size(); q++) {
+                 cerr << "Solution   " 
+		      << raimSolver.ComboSolution[q][0] << " "
+		      << raimSolver.ComboSolution[q][1] << " "
+		      << raimSolver.ComboSolution[q][2] << " "
+		      << raimSolver.ComboSolution[q][3] << " "
+		      << endl;
+                 cerr << "Satellites ";
+		 for (int g=0; g<raimSolver.ComboSolSat[q].size(); g++)
+		      cerr << raimSolver.ComboSolSat[q][g] << " ";
+		 cerr << endl;
+             }
+}
+
 int main(int argc, char *argv[])
 {
 
@@ -112,6 +209,7 @@ int main(int argc, char *argv[])
 
    try
    {
+      ComboContainer combolist;
 
          // Read nav file and store unique list of ephemerides
       Rinex3NavStream rnffs(argv[2]);    // Open ephemerides data file
@@ -333,33 +431,18 @@ int main(int argc, char *argv[])
 
                cout << endl ;
 
-               // now print all the little solutions
-               // debug out FIXME print solutions of all combos
-               for (int q=0; q<raimSolver.ComboSolution.size(); q++) {
-                 cerr << "Solution   " 
-		      << raimSolver.ComboSolution[q][0] << " "
-		      << raimSolver.ComboSolution[q][1] << " "
-		      << raimSolver.ComboSolution[q][2] << " "
-		      << raimSolver.ComboSolution[q][3] << " "
-		      << endl;
-                 cerr << "Satellites ";
-		 for (int g=0; g<raimSolver.ComboSolSat[q].size(); g++)
-		      cerr << raimSolver.ComboSolSat[q][g] << " ";
-		 cerr << endl;
-               }
-          
-          /*
-               // Now estimate those biases.
-               int solsize = ComboSolution.size()
-               Vector< double > BiasX, BiasY, BiasZ, BiasR;
-               Matrix< double > delta (solsize, solsize);
-          
-               // Compute those deltas first
-               for (int i=0; i<solsize; i++)
-                 for (int j=0; j<solsize; j++) {
-                   delta[i][j]=;
-                 }
-*/
+               debugPrintCombos(raimSolver); 
+
+
+               // now push these results into
+	       // some structure to hold a time series for each
+	       // satellite prn
+
+
+               // get the ID of this combo
+	       for (int g=0; g<raimSolver.ComboSolSat.size(); g++)
+	         cerr << "Combo ID " << combolist.getComboID(prnVec,raimSolver.ComboSolSat[g]) << endl;
+
 
             }  // End of 'if( raimSolver.isValid() )'
 	    else {
@@ -383,3 +466,4 @@ int main(int argc, char *argv[])
    exit(0);
 
 }  // End of 'main()'
+
