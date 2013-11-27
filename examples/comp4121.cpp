@@ -181,10 +181,24 @@ class ComboContainer {
       return diffsum;
     }
 
+    // TODO make this work on positioning solution, not just one component.
+    // for now, select component using index cp = {0,1,2 or 3};
+    double calculateBeta(int cp, vector< Vector< double > > vi, double biasi, vector< Vector< double > > vj, double biasj) {
+      int T = vi.size();
+      double beta=0;
+      for (int t=0;t<T;t++) {
+        double term = (vi[t][cp] - biasi) - (vj[t][cp] - biasj);
+	beta += term*term;
+      }
+      return (beta / (T-1));
+    }
+
     int calculateBiases() {
       sortSolIDs();
-      int T = 1;
+      int T = 50;
       int unusedSols = 0;
+      // for now just use the fourth component (receiver clock error)
+      int cp=0;
 
       cerr << "Number of solution IDs = " << sol_ids.size() <<endl;
 
@@ -205,23 +219,21 @@ class ComboContainer {
 
       cerr << "Unused Solutions = " << unusedSols << endl;
 
-      Matrix< Vector< double > > delta ( use_sol_ids.size(), use_sol_ids.size());
+      int dim=use_sol_ids.size();
 
-      for (int i=0; i< use_sol_ids.size(); i++) {
+      Matrix< Vector< double > > delta ( dim, dim);
+
+      for (int i=0; i< dim; i++) {
         int id_i = use_sol_ids[i];
-        for (int j=0; j< use_sol_ids.size(); j++) {
+        for (int j=0; j< dim; j++) {
           int id_j = use_sol_ids[j];
 	  // add this to the delta matrix;
           delta[i][j]=calculateDelta(all_ts[i], all_ts[j]);
 	  //debugPrintVec("Delta " , delta[i][j]);
 	}
       }
-      cerr << "Delta matrix size: " << delta.size() << " x " << delta[0].size() << endl;
 
       // Deltas have been computed. Now it is time to solve the system of equations (3.3 in AI's notes)
-      // for now just use the fourth component (receiver clock error)
-      int cp=0;
-      int dim=use_sol_ids.size();
       Matrix< double > A (dim + 1,dim + 1); // + 1 for lambda parameter
       Vector< double > b (dim+1);
 
@@ -239,6 +251,7 @@ class ComboContainer {
 	A[k][dim]=1; // \lambda
       }
       for (int i=0; i< dim; i++) A[dim][i]=1; // sum(b_i) == 0
+      A[dim][dim]=0;
 
       cerr << "Generate b" << endl;
       // b vector
@@ -259,6 +272,87 @@ class ComboContainer {
       // can I print bias?
       cerr << "Bias solution " << endl;
       for (int k=0; k < dim+1; k++) cerr << bias[k] << endl;
+
+      // now calculate the variances
+      cerr << "Calculating variances" << endl;
+
+      // TODO FIXME make this Matrix< Vector< double > >
+      Matrix< double > Beta ( use_sol_ids.size(), use_sol_ids.size());
+
+      for (int i=0; i< use_sol_ids.size(); i++) {
+        int id_i = use_sol_ids[i];
+        for (int j=0; j< use_sol_ids.size(); j++) {
+          int id_j = use_sol_ids[j];
+	  // Beta matrix entry
+          Beta[i][j]=calculateBeta(cp, all_ts[i], bias[i], all_ts[j], bias[j]);
+	  //debugPrintVec("Delta " , delta[i][j]);
+	}
+      }
+      
+      // now formulate a second linear system using equations in 3.7 in AI's notes
+
+      
+      
+      cerr << "Generate A" << endl;
+      for (int k=0; k < dim; k++) {
+        A[k][k]=0;
+        for (int i=0; i< dim; i++) {
+	  if (i!=k) {
+            A[k][i]=1.0/(Beta[i][k] * Beta[i][k]); // 2/(d(i,k)^2)
+	    A[k][k]+=A[k][i]; // sum(2/(d(i,k)^2))
+	  }
+	}
+	//A[k][k]=gpstk::sum<double>(A[k]); // sum(2/(d(i,k)^2))
+	A[k][dim]=0.5; // \lambda
+      }
+      for (int i=0; i< dim; i++) A[dim][i]=1; // sum(v_i) == the complicated rhs
+      A[dim][dim]=0;
+
+      cerr << "Generate b" << endl;
+      // b vector
+      for (int k=0; k < dim; k++) {
+        b[k]=0;
+        for (int i=0; i< dim; i++) {
+          if (i!=k) b[k] += 1.0 / Beta[i][k]; // already [cp]
+	}
+      }
+      cerr << "Calculate expected values using biased solutions" << endl;
+      // FIXME TODO make this a vector of expected position solutions
+      vector< double > avg_sol(T,0);
+      for (int t=0; t< T; t++) {
+        //avg_sol.push_back(0); // new epoch
+        for (int i=0; i< dim; i++) {
+          avg_sol[t] += all_ts[i][t][cp];
+	}
+	avg_sol[t] /= dim;
+      }
+      cerr << "Final equation in 3.7" <<endl;
+      // b_{N+1}= rhs of bottom of eqn 3.7 
+      for (int i=0; i < dim; i++) {
+        double sum_sq_dx = 0;
+        for (int t=0; t< T; t++) {
+	  double dx= all_ts[i][t][cp]-avg_sol[t];
+	  sum_sq_dx += dx * dx;
+	}
+	b[dim] += sum_sq_dx;
+      }
+      b[dim] *= ((double)dim)/(T*(dim-1));
+
+
+
+      cerr << "Solve variance=A^(-1) b" << endl;
+      // now solve
+      Vector< double > variance (dim+1);
+      variance = gpstk::inverse(A)*b; // heaps slow.
+      // can I print?
+      cerr << "Variance solution " << endl;
+      for (int k=0; k < dim+1; k++) cerr << variance[k] << endl;
+
+
+      // how do we relate position solution variances to prn variances?
+
+      // it seems that 11C3 = 165 which means a lot of combinations share the error of just one pseudorange
+      // therefore back-propagating the bias of this solution to the bias on the pseduorange
 
       //cerr << "B " << endl;
       //for (int k=0; k < dim+1; k++) cerr << b[k] << endl;
