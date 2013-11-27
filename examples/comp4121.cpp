@@ -172,28 +172,32 @@ class ComboContainer {
     }
 
     Vector< double > calculateDelta(vector< Vector< double > > vi, vector< Vector< double > > vj) {
-      Vector<double> diffsum=0;
-      for (int t=0;t<vi.size();t++)
-        diffsum += vi[t]-vj[t];
-      diffsum /= (double)(vi.size());
+      Vector<double> diffsum(vi[0]);
+      for (int i=0; i<diffsum.size(); i++) diffsum[i]=0;
+      for (int t=0;t<vi.size();t++){
+        diffsum += (vi[t]-vj[t]);
+      }
+      diffsum = diffsum / (double)(vi.size());
       return diffsum;
     }
 
     int calculateBiases() {
       sortSolIDs();
-      int T = 5;
+      int T = 1;
       int unusedSols = 0;
 
       cerr << "Number of solution IDs = " << sol_ids.size() <<endl;
 
-      map< int, vector< Vector< double > > > all_ts;
+      vector< vector< Vector< double > > > all_ts;
+      vector< int > use_sol_ids;
       
       // Now we can calculate the biases of a time series of length say 5
       for (int i=0;i<sol_ids.size();i++) {
         int id=sol_ids[i];
         vector< Vector<double> > ts;
         if (getTimeSeries(id, T, T, ts)) {
-	  all_ts[id]=ts;
+	  all_ts.push_back(ts);
+	  use_sol_ids.push_back(id);
 	} else {
 	  unusedSols++;
 	}
@@ -201,21 +205,68 @@ class ComboContainer {
 
       cerr << "Unused Solutions = " << unusedSols << endl;
 
-      Matrix< Vector< double > > delta ( sol_ids.size(), sol_ids.size());
+      Matrix< Vector< double > > delta ( use_sol_ids.size(), use_sol_ids.size());
 
-      for (int i=0; i< sol_ids.size(); i++) {
-        int id_i = sol_ids[i];
-	if(all_ts[id_i].size()) {
-          for (int j=0; j< sol_ids.size(); j++) {
-            int id_j = sol_ids[j];
-	    if(all_ts[id_j].size()) {
-	      // add this to the delta matrix;
-              delta[i][j]=calculateDelta(all_ts[id_i], all_ts[id_j]);
-	      debugPrintVec("Delta " , delta[i][j]);
-	    }
-	  }
+      for (int i=0; i< use_sol_ids.size(); i++) {
+        int id_i = use_sol_ids[i];
+        for (int j=0; j< use_sol_ids.size(); j++) {
+          int id_j = use_sol_ids[j];
+	  // add this to the delta matrix;
+          delta[i][j]=calculateDelta(all_ts[i], all_ts[j]);
+	  //debugPrintVec("Delta " , delta[i][j]);
 	}
       }
+      cerr << "Delta matrix size: " << delta.size() << " x " << delta[0].size() << endl;
+
+      // Deltas have been computed. Now it is time to solve the system of equations (3.3 in AI's notes)
+      // for now just use the fourth component (receiver clock error)
+      int cp=0;
+      int dim=use_sol_ids.size();
+      Matrix< double > A (dim + 1,dim + 1); // + 1 for lambda parameter
+      Vector< double > b (dim+1);
+
+      cerr << "Generate A" << endl;
+      for (int k=0; k < dim; k++) {
+        //cerr << "k=" << k << endl;
+        A[k][k]=0;
+        for (int i=0; i< dim; i++) {
+	  if (i!=k) {
+            A[k][i]=2.0/(delta[k][i][cp] * delta[k][i][cp]); // 2/(d(i,k)^2)
+	    A[k][k]+=A[k][i]; // sum(2/(d(i,k)^2))
+	  }
+	}
+	//A[k][k]=gpstk::sum<double>(A[k]); // sum(2/(d(i,k)^2))
+	A[k][dim]=1; // \lambda
+      }
+      for (int i=0; i< dim; i++) A[dim][i]=1; // sum(b_i) == 0
+
+      cerr << "Generate b" << endl;
+      // b vector
+      for (int k=0; k < dim; k++) {
+        b[k]=0;
+        for (int i=0; i< dim; i++) {
+          if (i!=k) b[k] += ((i >= k) ? 1.0 : -1.0) / delta[k][i][cp];
+	}
+	b[k] *= 2;
+      }
+      b[dim] = 0; // sum of b_i == 0
+
+      cerr << "Solve bias=A^(-1) b" << endl;
+      // now solve
+      Vector< double > bias (dim+1);
+      bias = gpstk::inverse(A)*b; // heaps slow.
+
+      // can I print bias?
+      cerr << "Bias solution " << endl;
+      for (int k=0; k < dim+1; k++) cerr << bias[k] << endl;
+
+      //cerr << "B " << endl;
+      //for (int k=0; k < dim+1; k++) cerr << b[k] << endl;
+
+      //cerr << "A[0] " << endl;
+      //for (int k=0; k < dim+1; k++) cerr << A[k][0] << endl;
+
+
     }
 };
 
