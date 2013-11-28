@@ -30,6 +30,9 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <iostream>
+#include <iomanip>
+#include <fstream>
 
    // Classes for handling observations RINEX files (data)
 #include "Rinex3ObsHeader.hpp"
@@ -193,6 +196,14 @@ class ComboContainer {
       return (beta / (T-1));
     }
 
+
+    // class variables
+    vector< vector< Vector< double > > > all_ts;
+    vector< int > use_sol_ids;
+
+    Vector< double > bias;
+    Vector< double > variance;
+
     int calculateBiases() {
       sortSolIDs();
       int T = 50;
@@ -202,8 +213,6 @@ class ComboContainer {
 
       cerr << "Number of solution IDs = " << sol_ids.size() <<endl;
 
-      vector< vector< Vector< double > > > all_ts;
-      vector< int > use_sol_ids;
       
       // Now we can calculate the biases of a time series of length say 5
       for (int i=0;i<sol_ids.size();i++) {
@@ -266,7 +275,7 @@ class ComboContainer {
 
       cerr << "Solve bias=A^(-1) b" << endl;
       // now solve
-      Vector< double > bias (dim+1);
+      bias (dim+1);
       bias = gpstk::inverse(A)*b; // heaps slow.
 
       // can I print bias?
@@ -291,8 +300,6 @@ class ComboContainer {
       
       // now formulate a second linear system using equations in 3.7 in AI's notes
 
-      
-      
       cerr << "Generate A" << endl;
       for (int k=0; k < dim; k++) {
         A[k][k]=0;
@@ -342,12 +349,13 @@ class ComboContainer {
 
       cerr << "Solve variance=A^(-1) b" << endl;
       // now solve
-      Vector< double > variance (dim+1);
-      variance = gpstk::inverse(A)*b; // heaps slow.
+      variance (dim+1);
+      variance = gpstk::inverse(A)*b; // Unoptimised. Should use L*L decomposition.
       // can I print?
       cerr << "Variance solution " << endl;
       for (int k=0; k < dim+1; k++) cerr << variance[k] << endl;
 
+      
 
       // how do we relate position solution variances to prn variances?
 
@@ -361,6 +369,49 @@ class ComboContainer {
       //for (int k=0; k < dim+1; k++) cerr << A[k][0] << endl;
 
 
+    }
+
+    void bestSolution(ostream * outfile) {
+      *outfile << "test" << endl;
+
+      double reg = 0.5; // regularisation factor \lambda
+
+      int dim = variance.size()-1; // lambda is last term
+      int T = all_ts[0].size();
+
+      vector< double > weight(dim);
+
+
+      double totalvariance = 0;
+      // weight = 1/variance/(1/total variance)
+      for (int k=0;k<dim;k++) {
+        totalvariance+= 1.0/(variance[k] + bias[k]*bias[k] + reg);
+      }
+
+      for (int k=0;k<dim;k++) {
+        weight[k] = 1.0/(variance[k]+bias[k]*bias[k] + reg) / totalvariance;
+      }
+
+      // use these to weight entire solution (not just component we're estimating)
+      Vector< Vector< double > > ws(T,Vector< double >(4, 0));
+      for (int t=0;t<T;t++) {
+        for (int k=0;k<dim;k++) {
+	  for (int i=0;i<4;i++ ) {
+	    ws[t][i]+= weight[k]*all_ts[k][t][i];
+	  }
+	}
+      }
+
+      // write it out.
+      for (int t=0;t<T;t++) {
+	for (int i=0;i<4;i++) {
+	  *outfile << setprecision(15) << setw(20) << ws[t][i];
+	}
+	*outfile << endl;
+      }
+
+
+        
     }
 };
 
@@ -665,6 +716,12 @@ int main(int argc, char *argv[])
       cerr << combolist.ComboSolutions.size() << " combination solutions stored" << endl;
 
       combolist.calculateBiases();
+      
+      ostream * outfile;
+      string filename("bestoutput");
+      outfile = new fstream((filename+".txt").c_str(), fstream::out);
+      combolist.bestSolution(outfile);
+      
 
    }
    catch(Exception& e)
