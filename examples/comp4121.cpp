@@ -206,7 +206,7 @@ class ComboContainer {
 
     int calculateBiases() {
       sortSolIDs();
-      int T = 50;
+      int T = 100;
       int unusedSols = 0;
       // for now just use the fourth component (receiver clock error)
       int cp=0;
@@ -218,7 +218,7 @@ class ComboContainer {
       for (int i=0;i<sol_ids.size();i++) {
         int id=sol_ids[i];
         vector< Vector<double> > ts;
-        if (getTimeSeries(id, T, T, ts)) {
+        if (getTimeSeries(id, T-1, T, ts)) {
 	  all_ts.push_back(ts);
 	  use_sol_ids.push_back(id);
 	} else {
