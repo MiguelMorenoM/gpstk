@@ -164,36 +164,43 @@ class ComboContainer {
       // otherwise return 0;
 
       if (ComboSolutions.size() < epoch || (epoch - length + 1) < 0) return 0;
-      while (length > 0) {
+      int ce = epoch - (length-1);
+      while (ce <= epoch) {
         // get the solution of SV[id] for epoch
-	if (ComboSolutions[epoch][id].size() == 0) return 0; // this creates an entry (thus memory management) but is faster than catching an exception. Blame STL for this mess.
-	ts.push_back(ComboSolutions[epoch][id]);
-	epoch--;
-        length--;
+	if (ComboSolutions[ce][id].size() == 0) return 0; // this creates an entry (thus memory management) but is faster than catching an exception. Blame STL for this mess.
+	ts.push_back(ComboSolutions[ce][id]);
+	ce++;
       }
       return 1;
     }
 
     Vector< double > calculateDelta(vector< Vector< double > > vi, vector< Vector< double > > vj) {
+      int T = vi.size();
       Vector<double> diffsum(vi[0]);
       for (int i=0; i<diffsum.size(); i++) diffsum[i]=0;
       for (int t=0;t<vi.size();t++){
         diffsum += (vi[t]-vj[t]);
       }
-      diffsum = diffsum / (double)(vi.size());
+      diffsum = diffsum / (double)(T);
       return diffsum;
     }
 
     // TODO make this work on positioning solution, not just one component.
     // for now, select component using index cp = {0,1,2 or 3};
-    double calculateBeta(int cp, vector< Vector< double > > vi, double biasi, vector< Vector< double > > vj, double biasj) {
+    Vector<double> calculateBeta(vector< Vector< double > > vi, Vector<double> biasi, vector< Vector< double > > vj, Vector<double> biasj) {
       int T = vi.size();
-      double beta=0;
+      Vector<double> beta(4,0);
       for (int t=0;t<T;t++) {
-        double term = (vi[t][cp] - biasi) - (vj[t][cp] - biasj);
-	beta += term*term;
+        Vector<double> term = (vi[t] - biasi) - (vj[t] - biasj);
+	// element-wise mult
+	for (int j=0;j<term.size();j++) {
+	  //term[j] += biasj[j]-biasi[j];
+	  term[j] *= term[j];
+	}
+	beta += term;
       }
-      return (beta / (T-1));
+      double tm = 1.0/T-1;
+      return (beta * tm);
     }
 
 
@@ -201,10 +208,10 @@ class ComboContainer {
     vector< vector< Vector< double > > > all_ts;
     vector< int > use_sol_ids;
 
-    Vector< double > bias;
-    Vector< double > variance;
+    vector< Vector< double > > bias;
+    vector< Vector< double > > variance;
 
-    int calculateBiases() {
+    int calculateBiases(ostream * biasoutfile, ostream * varoutfile) {
       sortSolIDs();
       int T = 100;
       int unusedSols = 0;
@@ -214,7 +221,7 @@ class ComboContainer {
       cerr << "Number of solution IDs = " << sol_ids.size() <<endl;
 
       
-      // Now we can calculate the biases of a time series of length say 5
+      // Now we can calculate the biases of the time series length T
       for (int i=0;i<sol_ids.size();i++) {
         int id=sol_ids[i];
         vector< Vector<double> > ts;
@@ -245,116 +252,139 @@ class ComboContainer {
       // Deltas have been computed. Now it is time to solve the system of equations (3.3 in AI's notes)
       Matrix< double > A (dim + 1,dim + 1); // + 1 for lambda parameter
       Vector< double > b (dim+1);
+      // stuff it.
+      vector< Vector <double> > localbias (dim+1, Vector< double >(4,0));
+      bias = localbias;
 
-      cerr << "Generate A" << endl;
-      for (int k=0; k < dim; k++) {
-        //cerr << "k=" << k << endl;
-        A[k][k]=0;
-        for (int i=0; i< dim; i++) {
-	  if (i!=k) {
-            A[k][i]=2.0/(delta[k][i][cp] * delta[k][i][cp]); // 2/(d(i,k)^2)
-	    A[k][k]+=A[k][i]; // sum(2/(d(i,k)^2))
-	  }
-	}
-	//A[k][k]=gpstk::sum<double>(A[k]); // sum(2/(d(i,k)^2))
-	A[k][dim]=1; // \lambda
+      for (cp=0;cp<4;cp++) {
+  
+        cerr << "Generate A" << endl;
+        for (int k=0; k < dim; k++) {
+          //cerr << "k=" << k << endl;
+          A[k][k]=0;
+          for (int i=0; i< dim; i++) {
+  	    if (i!=k) {
+              A[k][i]=2.0/(delta[k][i][cp] * delta[k][i][cp]); // 2/(d(i,k)^2)
+  	      A[k][k]+=A[k][i]; // sum(2/(d(i,k)^2))
+  	    }
+  	  }
+  	  //A[k][k]=gpstk::sum<double>(A[k]); // sum(2/(d(i,k)^2))
+  	  A[k][dim]=1; // \lambda
+        }
+        for (int i=0; i< dim; i++) A[dim][i]=1; // sum(b_i) == 0
+        A[dim][dim]=0;
+  
+        cerr << "Generate b" << endl;
+        // b vector
+        for (int k=0; k < dim; k++) {
+          b[k]=0;
+          for (int i=0; i< dim; i++) {
+            if (i!=k) b[k] += ((i >= k) ? 1.0 : -1.0) / delta[k][i][cp];
+  	}
+  	b[k] *= 2;
+        }
+        b[dim] = 0; // sum of b_i == 0
+  
+        cerr << "Solve bias=A^(-1) b" << endl;
+        // now solve
+	Vector<double> mm(dim+1);
+	mm = gpstk::inverse(A)*b; // heaps slow.
+	for (int jj=0;jj<dim+1;jj++) bias[jj][cp]=mm[jj];
+  
+        // print bias
+        //cerr << "Bias solution component " << cp << endl;
+        //for (int k=0; k < dim+1; k++) cerr << bias[k][cp] << endl;
+  
       }
-      for (int i=0; i< dim; i++) A[dim][i]=1; // sum(b_i) == 0
-      A[dim][dim]=0;
 
-      cerr << "Generate b" << endl;
-      // b vector
-      for (int k=0; k < dim; k++) {
-        b[k]=0;
-        for (int i=0; i< dim; i++) {
-          if (i!=k) b[k] += ((i >= k) ? 1.0 : -1.0) / delta[k][i][cp];
-	}
-	b[k] *= 2;
+        //cerr << "Bias solution component " << endl;
+      for (int k=0; k < dim+1; k++) {
+        for (int cp=0;cp<4;cp++)
+	  *biasoutfile << setprecision(13) << setw(20) << bias[k][cp];
+        *biasoutfile << endl;
       }
-      b[dim] = 0; // sum of b_i == 0
-
-      cerr << "Solve bias=A^(-1) b" << endl;
-      // now solve
-      bias (dim+1);
-      bias = gpstk::inverse(A)*b; // heaps slow.
-
-      // can I print bias?
-      cerr << "Bias solution " << endl;
-      for (int k=0; k < dim+1; k++) cerr << bias[k] << endl;
 
       // now calculate the variances
       cerr << "Calculating variances" << endl;
+      vector< Vector< double> > localvariance (dim+1, Vector< double >(4,0));
+      variance = localvariance;
 
       // TODO FIXME make this Matrix< Vector< double > >
-      Matrix< double > Beta ( use_sol_ids.size(), use_sol_ids.size());
+      Matrix< Vector<double> > Beta ( use_sol_ids.size(), use_sol_ids.size(), Vector<double>(4));
 
       for (int i=0; i< use_sol_ids.size(); i++) {
-        int id_i = use_sol_ids[i];
+        //int id_i = use_sol_ids[i];
         for (int j=0; j< use_sol_ids.size(); j++) {
-          int id_j = use_sol_ids[j];
 	  // Beta matrix entry
-          Beta[i][j]=calculateBeta(cp, all_ts[i], bias[i], all_ts[j], bias[j]);
-	  //debugPrintVec("Delta " , delta[i][j]);
+          Beta[i][j]=calculateBeta(all_ts[i], bias[i], all_ts[j], bias[j]);
 	}
       }
       
       // now formulate a second linear system using equations in 3.7 in AI's notes
 
-      cerr << "Generate A" << endl;
-      for (int k=0; k < dim; k++) {
-        A[k][k]=0;
-        for (int i=0; i< dim; i++) {
-	  if (i!=k) {
-            A[k][i]=1.0/(Beta[i][k] * Beta[i][k]); // 2/(d(i,k)^2)
-	    A[k][k]+=A[k][i]; // sum(2/(d(i,k)^2))
-	  }
-	}
-	//A[k][k]=gpstk::sum<double>(A[k]); // sum(2/(d(i,k)^2))
-	A[k][dim]=0.5; // \lambda
-      }
-      for (int i=0; i< dim; i++) A[dim][i]=1; // sum(v_i) == the complicated rhs
-      A[dim][dim]=0;
-
-      cerr << "Generate b" << endl;
-      // b vector
-      for (int k=0; k < dim; k++) {
-        b[k]=0;
-        for (int i=0; i< dim; i++) {
-          if (i!=k) b[k] += 1.0 / Beta[i][k]; // already [cp]
-	}
-      }
-      cerr << "Calculate expected values using biased solutions" << endl;
-      // FIXME TODO make this a vector of expected position solutions
-      vector< double > avg_sol(T,0);
-      for (int t=0; t< T; t++) {
-        //avg_sol.push_back(0); // new epoch
-        for (int i=0; i< dim; i++) {
-          avg_sol[t] += all_ts[i][t][cp];
-	}
-	avg_sol[t] /= dim;
-      }
-      cerr << "Final equation in 3.7" <<endl;
-      // b_{N+1}= rhs of bottom of eqn 3.7 
-      for (int i=0; i < dim; i++) {
-        double sum_sq_dx = 0;
+      for (int cp=0;cp<4;cp++) {
+  
+        cerr << "Generate A" << endl;
+        for (int k=0; k < dim; k++) {
+          A[k][k]=0;
+          for (int i=0; i< dim; i++) {
+  	    if (i!=k) {
+              A[k][i]=1.0/(Beta[i][k][cp] * Beta[i][k][cp]); // 2/(d(i,k)^2)
+  	      A[k][k]+=A[k][i]; // sum(2/(d(i,k)^2))
+  	    }
+  	  }
+  	  //A[k][k]=gpstk::sum<double>(A[k]); // sum(2/(d(i,k)^2))
+  	  A[k][dim]=0.5; // \lambda
+        }
+        for (int i=0; i< dim; i++) A[dim][i]=1; // sum(v_i) == the complicated rhs
+        A[dim][dim]=0;
+  
+        cerr << "Generate b" << endl;
+        // b vector
+        for (int k=0; k < dim; k++) {
+          b[k]=0;
+          for (int i=0; i< dim; i++) {
+            if (i!=k) b[k] += 1.0 / Beta[i][k][cp];
+  	  }
+        }
+        cerr << "Calculate expected values using biased solutions" << endl;
+        // FIXME TODO make this a vector of expected position solutions
+        vector< double > avg_sol(T,0);
         for (int t=0; t< T; t++) {
-	  double dx= all_ts[i][t][cp]-avg_sol[t];
-	  sum_sq_dx += dx * dx;
-	}
-	b[dim] += sum_sq_dx;
+          //avg_sol.push_back(0); // new epoch
+          for (int i=0; i< dim; i++) {
+            avg_sol[t] += all_ts[i][t][cp];
+  	  }
+  	  avg_sol[t] /= dim;
+        }
+        cerr << "Final equation in 3.7" <<endl;
+        // b_{N+1}= rhs of bottom of eqn 3.7 
+        for (int i=0; i < dim; i++) {
+          double sum_sq_dx = 0;
+          for (int t=0; t< T; t++) {
+  	    double dx= all_ts[i][t][cp]-avg_sol[t];
+  	    sum_sq_dx += dx * dx;
+  	  }
+  	  b[dim] += sum_sq_dx;
+        }
+        b[dim] *= ((double)dim)/(T*(dim-1));
+  
+  
+  
+        cerr << "Solve variance=A^(-1) b" << endl;
+        // now solve
+	Vector<double> mm(dim+1);
+        mm = gpstk::inverse(A)*b; // Unoptimised. Should use L*L decomposition.
+	for (int jj=0;jj<dim+1;jj++) variance[jj][cp]=mm[jj];
       }
-      b[dim] *= ((double)dim)/(T*(dim-1));
 
 
-
-      cerr << "Solve variance=A^(-1) b" << endl;
-      // now solve
-      variance (dim+1);
-      variance = gpstk::inverse(A)*b; // Unoptimised. Should use L*L decomposition.
-      // can I print?
-      cerr << "Variance solution " << endl;
-      for (int k=0; k < dim+1; k++) cerr << variance[k] << endl;
-
+        //cerr << "Variance solution component " << endl;
+      for (int k=0; k < dim+1; k++) {
+        for (int cp=0;cp<4;cp++)
+	  *varoutfile << setprecision(13) << setw(20) << variance[k][cp];
+        *varoutfile << endl;
+      }
       
 
       // how do we relate position solution variances to prn variances?
@@ -372,24 +402,26 @@ class ComboContainer {
     }
 
     void bestSolution(ostream * outfile) {
-      *outfile << "test" << endl;
-
       double reg = 0.5; // regularisation factor \lambda
 
       int dim = variance.size()-1; // lambda is last term
       int T = all_ts[0].size();
 
-      vector< double > weight(dim);
+      vector< Vector< double > > weight(dim, Vector<double>(4,0));
+      // because MatrixRowSlice and Vector can't be used in same operations, just use up more memory and copy variances to a Vector<Vector> memory structure
+
+      Vector< Vector<double> > bias_sq(dim+1,4);
+      for (int i=0;i<dim+1;i++) for (int j=0;j<4;j++) bias_sq[i][j]=bias[i][j]*bias[i][j];
 
 
-      double totalvariance = 0;
+      Vector<double> totalvariance(4,0);
       // weight = 1/variance/(1/total variance)
       for (int k=0;k<dim;k++) {
-        totalvariance+= 1.0/(variance[k] + bias[k]*bias[k] + reg);
+        totalvariance+= 1.0/(variance[k] + bias_sq[k] + reg);
       }
 
       for (int k=0;k<dim;k++) {
-        weight[k] = 1.0/(variance[k]+bias[k]*bias[k] + reg) / totalvariance;
+        weight[k] = (1.0/(variance[k]+bias_sq[k] + reg)) / totalvariance;
       }
 
       // use these to weight entire solution (not just component we're estimating)
@@ -397,7 +429,7 @@ class ComboContainer {
       for (int t=0;t<T;t++) {
         for (int k=0;k<dim;k++) {
 	  for (int i=0;i<4;i++ ) {
-	    ws[t][i]+= weight[k]*all_ts[k][t][i];
+	    ws[t][i]+= weight[k][i]*all_ts[k][t][i];
 	  }
 	}
       }
@@ -405,7 +437,7 @@ class ComboContainer {
       // write it out.
       for (int t=0;t<T;t++) {
 	for (int i=0;i<4;i++) {
-	  *outfile << setprecision(15) << setw(20) << ws[t][i];
+	  *outfile << setprecision(13) << setw(20) << ws[t][i];
 	}
 	*outfile << endl;
       }
@@ -715,7 +747,13 @@ int main(int argc, char *argv[])
       }  // End of 'while( roffs >> rod )'
       cerr << combolist.ComboSolutions.size() << " combination solutions stored" << endl;
 
-      combolist.calculateBiases();
+      ostream * varoutfile;
+      ostream * biasoutfile;
+      string biasfilename("bias_output");
+      biasoutfile = new fstream((biasfilename+".txt").c_str(), fstream::out);
+      string varfilename("variance_output");
+      varoutfile = new fstream((varfilename+".txt").c_str(), fstream::out);
+      combolist.calculateBiases(biasoutfile,varoutfile);
       
       ostream * outfile;
       string filename("bestoutput");
