@@ -402,7 +402,7 @@ class ComboContainer {
     }
 
     void bestSolution(ostream * outfile) {
-      double reg = 0.5; // regularisation factor \lambda
+      double reg = 0.00001; // regularisation factor \lambda
 
       int dim = variance.size()-1; // lambda is last term
       int T = all_ts[0].size();
@@ -417,11 +417,15 @@ class ComboContainer {
       Vector<double> totalvariance(4,0);
       // weight = 1/variance/(1/total variance)
       for (int k=0;k<dim;k++) {
-        totalvariance+= 1.0/(variance[k] + bias_sq[k] + reg);
+	for (int i=0;i<4;i++ ) {
+          totalvariance[i]+= 1.0/(abs(variance[k][i]) + abs(bias_sq[k][i]) + reg);
+        }
       }
 
       for (int k=0;k<dim;k++) {
-        weight[k] = (1.0/(variance[k]+bias_sq[k] + reg)) / totalvariance;
+	for (int i=0;i<4;i++ ) {
+          weight[k][i] = (1.0/(abs(variance[k][i])+abs(bias_sq[k][i]) + reg)) / totalvariance[i];
+        }
       }
 
       // use these to weight entire solution (not just component we're estimating)
