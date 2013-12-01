@@ -155,25 +155,25 @@ int main(int argc, char *argv[])
          // The following lines fetch the corresponding indexes for some
          // observation types we are interested in. Given that old-style
          // observation types are used, GPS is assumed.
-      int indexC1;
+      int indexP1;
       try
       {
-         indexC1 = roh.getObsIndex( "C1" );
+         indexP1 = roh.getObsIndex( "P1" );
       }
       catch(...)
       {
-         cerr << "The observation file doesn't have C1 pseudoranges." << endl;
+         cerr << "The observation file doesn't have P1 pseudoranges." << endl;
          exit(1);
       }
 
-      int indexC2;
+      int indexP2;
       try
       {
-         indexC2 = roh.getObsIndex( "C2" );
+         indexP2 = roh.getObsIndex( "P2" );
       }
       catch(...)
       {
-         indexC2 = -1;
+         indexP2 = -1;
       }
 
          // Defining iterator "mi" for meteorological data linked list
@@ -227,54 +227,54 @@ int main(int argc, char *argv[])
             for( it = rod.obs.begin(); it!= rod.obs.end(); it++ )
             {
 
-                  // The RINEX file may have C1 observations, but the current
+                  // The RINEX file may have P1 observations, but the current
                   // satellite may not have them.
-               double C1( 0.0 );
+               double P1( 0.0 );
                try
                {
-                  C1 = rod.getObs( (*it).first, indexC1 ).data;
+                  P1 = rod.getObs( (*it).first, indexP1 ).data;
                }
                catch(...)
                {
-                     // Ignore this satellite if C1 is not found
+                     // Ignore this satellite if P1 is not found
                   continue;
                }
 
                double ionocorr( 0.0 );
 
-                  // If there are C2 observations, let's try to apply the
+                  // If there are P2 observations, let's try to apply the
                   // ionospheric corrections
-               if( indexC2 >= 0 )
+               if( indexP2 >= 0 )
                {
 
-                     // The RINEX file may have C2 observations, but the
+                     // The RINEX file may have P2 observations, but the
                      // current satellite may not have them.
-                  double C2( 0.0 );
+                  double P2( 0.0 );
                   try
                   {
-                     C2 = rod.getObs( (*it).first, indexC2 ).data;
+                     P2 = rod.getObs( (*it).first, indexP2 ).data;
                   }
                   catch(...)
                   {
-                        // Ignore this satellite if C1 is not found
+                        // Ignore this satellite if P1 is not found
                      continue;
                   }
 
                      // Vector 'vecData' contains RinexDatum, whose public
                      // attribute "data" indeed holds the actual data point
-                  ionocorr = 1.0 / (1.0 - gamma) * ( C1 - C2 );
+                  ionocorr = 1.0 / (1.0 - gamma) * ( P1 - P2 );
 
                }
 
                   // Now, we include the current PRN number in the first part
                   // of "it" iterator into the vector holding the satellites.
-                  // All satellites in view at this epoch that have C1 or C1+C2
+                  // All satellites in view at this epoch that have P1 or P1+P2
                   // observations will be included.
                prnVec.push_back( (*it).first );
 
                   // The same is done for the vector of doubles holding the
                   // corrected ranges
-               rangeVec.push_back( C1 - ionocorr );
+               rangeVec.push_back( P1 - ionocorr );
 
                      // WARNING: Please note that so far no further correction
                      // is done on data: Relativistic effects, tropospheric

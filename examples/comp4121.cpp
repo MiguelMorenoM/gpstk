@@ -33,6 +33,7 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+//#include <boost/filesystem.hpp>
 
    // Classes for handling observations RINEX files (data)
 #include "Rinex3ObsHeader.hpp"
@@ -174,11 +175,12 @@ class ComboContainer {
       return 1;
     }
 
-    Vector< double > calculateDelta(vector< Vector< double > > vi, vector< Vector< double > > vj) {
-      int T = vi.size();
-      Vector<double> diffsum(vi[0]);
-      for (int i=0; i<diffsum.size(); i++) diffsum[i]=0;
-      for (int t=0;t<vi.size();t++){
+    Vector< double > calculateDelta(int slice, vector< Vector< double > > vi, vector< Vector< double > > vj) {
+      int T = getSliceLength();
+      int start = getSliceStart(slice);
+
+      Vector<double> diffsum(4,0);
+      for (int t=start;t<T+start;t++){
         diffsum += (vi[t]-vj[t]);
       }
       diffsum = diffsum / (double)(T);
@@ -187,10 +189,12 @@ class ComboContainer {
 
     // TODO make this work on positioning solution, not just one component.
     // for now, select component using index cp = {0,1,2 or 3};
-    Vector<double> calculateBeta(vector< Vector< double > > vi, Vector<double> biasi, vector< Vector< double > > vj, Vector<double> biasj) {
-      int T = vi.size();
+    Vector<double> calculateBeta(int slice, vector< Vector< double > > vi, Vector<double> biasi, vector< Vector< double > > vj, Vector<double> biasj) {
+      int T = getSliceLength();
+      int start = getSliceStart(slice);
+
       Vector<double> beta(4,0);
-      for (int t=0;t<T;t++) {
+      for (int t=start;t<T+start;t++) {
         Vector<double> term = (vi[t] - biasi) - (vj[t] - biasj);
 	// element-wise mult
 	for (int j=0;j<term.size();j++) {
@@ -205,27 +209,44 @@ class ComboContainer {
 
 
     // class variables
+    // making solution use sliced up time series. TODO FIXME make all_ts be vector by time series epoch... start... somehow
     vector< vector< Vector< double > > > all_ts;
     vector< int > use_sol_ids;
 
-    vector< Vector< double > > bias;
-    vector< Vector< double > > variance;
+    vector< vector< Vector <double> > > bias;
+    vector< vector< Vector< double> > > variance;
 
-    int calculateBiases(ostream * biasoutfile, ostream * varoutfile) {
+    int _slices;
+    int _totalT;
+
+    int initBiasVariance(int dim, int slices, int TotalT) {
+      _slices = slices;
+      _totalT = TotalT;
+      vector< vector< Vector <double> > > localbias (slices, vector< Vector<double> >(dim, Vector< double >(4,0)));
+      bias = localbias;
+      vector< vector< Vector< double> > > localvariance (slices, vector< Vector<double> >(dim, Vector< double >(4,0)));
+      variance = localvariance;
+    }
+
+
+    int getSliceLength() {
+      return floor(_totalT / _slices);
+    }
+    
+    int getSliceStart (int slice) {
+      return slice * getSliceLength();
+    }
+
+    void readTimeSeries() {
       sortSolIDs();
-      int T = 100;
       int unusedSols = 0;
-      // for now just use the fourth component (receiver clock error)
-      int cp=0;
 
       cerr << "Number of solution IDs = " << sol_ids.size() <<endl;
-
       
-      // Now we can calculate the biases of the time series length T
       for (int i=0;i<sol_ids.size();i++) {
         int id=sol_ids[i];
         vector< Vector<double> > ts;
-        if (getTimeSeries(id, T-1, T, ts)) {
+        if (getTimeSeries(id, _totalT-1, _totalT, ts)) {
 	  all_ts.push_back(ts);
 	  use_sol_ids.push_back(id);
 	} else {
@@ -234,8 +255,17 @@ class ComboContainer {
       }
 
       cerr << "Unused Solutions = " << unusedSols << endl;
+    }
 
+    int calculateBiases(int slice, ostream * biasoutfile, ostream * varoutfile) {
+      int cp=0;
+      // Now we can calculate the biases of the time series length T
       int dim=use_sol_ids.size();
+
+      int Start = getSliceStart(slice);
+
+      int T = getSliceLength();
+
 
       Matrix< Vector< double > > delta ( dim, dim);
 
@@ -244,7 +274,7 @@ class ComboContainer {
         for (int j=0; j< dim; j++) {
           int id_j = use_sol_ids[j];
 	  // add this to the delta matrix;
-          delta[i][j]=calculateDelta(all_ts[i], all_ts[j]);
+          delta[i][j]=calculateDelta(slice, all_ts[i], all_ts[j]);
 	  //debugPrintVec("Delta " , delta[i][j]);
 	}
       }
@@ -253,8 +283,6 @@ class ComboContainer {
       Matrix< double > A (dim + 1,dim + 1); // + 1 for lambda parameter
       Vector< double > b (dim+1);
       // stuff it.
-      vector< Vector <double> > localbias (dim+1, Vector< double >(4,0));
-      bias = localbias;
 
       for (cp=0;cp<4;cp++) {
   
@@ -285,11 +313,14 @@ class ComboContainer {
         }
         b[dim] = 0; // sum of b_i == 0
   
-        cerr << "Solve bias=A^(-1) b" << endl;
+        cerr << "Solve bias=A^(-1) b for component " << cp << endl;
+	cerr << "dim " << dim << " T " << T << " Start " << Start << " bias.size() " << bias.size() << endl;
         // now solve
 	Vector<double> mm(dim+1);
 	mm = gpstk::inverse(A)*b; // heaps slow.
-	for (int jj=0;jj<dim+1;jj++) bias[jj][cp]=mm[jj];
+	for (int jj=0;jj<dim;jj++) {
+	  bias[slice][jj][cp]=mm[jj];
+	}
   
         // print bias
         //cerr << "Bias solution component " << cp << endl;
@@ -297,17 +328,15 @@ class ComboContainer {
   
       }
 
-        //cerr << "Bias solution component " << endl;
+      *biasoutfile << "Bias solution at epoch " << Start << endl;
       for (int k=0; k < dim+1; k++) {
         for (int cp=0;cp<4;cp++)
-	  *biasoutfile << setprecision(13) << setw(20) << bias[k][cp];
+	  *biasoutfile << setprecision(13) << setw(20) << bias[slice][k][cp];
         *biasoutfile << endl;
       }
 
       // now calculate the variances
       cerr << "Calculating variances" << endl;
-      vector< Vector< double> > localvariance (dim+1, Vector< double >(4,0));
-      variance = localvariance;
 
       // TODO FIXME make this Matrix< Vector< double > >
       Matrix< Vector<double> > Beta ( use_sol_ids.size(), use_sol_ids.size(), Vector<double>(4));
@@ -316,7 +345,7 @@ class ComboContainer {
         //int id_i = use_sol_ids[i];
         for (int j=0; j< use_sol_ids.size(); j++) {
 	  // Beta matrix entry
-          Beta[i][j]=calculateBeta(all_ts[i], bias[i], all_ts[j], bias[j]);
+          Beta[i][j]=calculateBeta(slice, all_ts[i], bias[slice][i], all_ts[j], bias[slice][j]);
 	}
       }
       
@@ -353,7 +382,7 @@ class ComboContainer {
         for (int t=0; t< T; t++) {
           //avg_sol.push_back(0); // new epoch
           for (int i=0; i< dim; i++) {
-            avg_sol[t] += all_ts[i][t][cp];
+            avg_sol[t] += all_ts[i][t+Start][cp];
   	  }
   	  avg_sol[t] /= dim;
         }
@@ -362,7 +391,7 @@ class ComboContainer {
         for (int i=0; i < dim; i++) {
           double sum_sq_dx = 0;
           for (int t=0; t< T; t++) {
-  	    double dx= all_ts[i][t][cp]-avg_sol[t];
+  	    double dx= all_ts[i][t+Start][cp]-avg_sol[t];
   	    sum_sq_dx += dx * dx;
   	  }
   	  b[dim] += sum_sq_dx;
@@ -371,18 +400,18 @@ class ComboContainer {
   
   
   
-        cerr << "Solve variance=A^(-1) b" << endl;
+        cerr << "Solve variance=A^(-1) b for component " << cp << endl;
         // now solve
 	Vector<double> mm(dim+1);
         mm = gpstk::inverse(A)*b; // Unoptimised. Should use L*L decomposition.
-	for (int jj=0;jj<dim+1;jj++) variance[jj][cp]=mm[jj];
+	for (int jj=0;jj<dim;jj++) variance[slice][jj][cp]=mm[jj];
       }
 
 
-        //cerr << "Variance solution component " << endl;
+      *varoutfile << "Variance solution at epoch " << Start << endl;
       for (int k=0; k < dim+1; k++) {
         for (int cp=0;cp<4;cp++)
-	  *varoutfile << setprecision(13) << setw(20) << variance[k][cp];
+	  *varoutfile << setprecision(13) << setw(20) << variance[slice][k][cp];
         *varoutfile << endl;
       }
       
@@ -401,45 +430,48 @@ class ComboContainer {
 
     }
 
-    void bestSolution(ostream * outfile) {
-      double reg = 0.00001; // regularisation factor \lambda
+    void bestSolution(double reg, ostream * outfile) {
 
       int dim = variance.size()-1; // lambda is last term
-      int T = all_ts[0].size();
+      int allT = _totalT;
+      int T = getSliceLength();
+      Vector< Vector< double > > ws(allT,Vector< double >(4, 0));
 
-      vector< Vector< double > > weight(dim, Vector<double>(4,0));
-      // because MatrixRowSlice and Vector can't be used in same operations, just use up more memory and copy variances to a Vector<Vector> memory structure
+      for (int slice=0;slice<_slices;slice++) {
+        int Start = getSliceStart(slice);
 
-      Vector< Vector<double> > bias_sq(dim+1,4);
-      for (int i=0;i<dim+1;i++) for (int j=0;j<4;j++) bias_sq[i][j]=bias[i][j]*bias[i][j];
-
-
-      Vector<double> totalvariance(4,0);
-      // weight = 1/variance/(1/total variance)
-      for (int k=0;k<dim;k++) {
-	for (int i=0;i<4;i++ ) {
-          totalvariance[i]+= 1.0/(abs(variance[k][i]) + abs(bias_sq[k][i]) + reg);
-        }
-      }
-
-      for (int k=0;k<dim;k++) {
-	for (int i=0;i<4;i++ ) {
-          weight[k][i] = (1.0/(abs(variance[k][i])+abs(bias_sq[k][i]) + reg)) / totalvariance[i];
-        }
-      }
-
-      // use these to weight entire solution (not just component we're estimating)
-      Vector< Vector< double > > ws(T,Vector< double >(4, 0));
-      for (int t=0;t<T;t++) {
+        vector< Vector< double > > weight(dim, Vector<double>(4,0));
+        // because MatrixRowSlice and Vector can't be used in same operations, just use up more memory and copy variances to a Vector<Vector> memory structure
+  
+        Vector< Vector<double> > bias_sq(dim+1,4);
+        for (int i=0;i<dim+1;i++) for (int j=0;j<4;j++) bias_sq[i][j]=bias[slice][i][j]*bias[slice][i][j];
+  
+        Vector<double> totalvariance(4,0);
+        // weight = 1/variance/(1/total variance)
         for (int k=0;k<dim;k++) {
-	  for (int i=0;i<4;i++ ) {
-	    ws[t][i]+= weight[k][i]*all_ts[k][t][i];
-	  }
-	}
+  	  for (int i=0;i<4;i++ ) {
+            totalvariance[i]+= 1.0/(abs(variance[slice][k][i]) + abs(bias_sq[k][i]) + reg);
+          }
+        }
+  
+        for (int k=0;k<dim;k++) {
+  	  for (int i=0;i<4;i++ ) {
+            weight[k][i] = (1.0/(abs(variance[slice][k][i])+abs(bias_sq[k][i]) + reg)) / totalvariance[i];
+          }
+        }
+  
+        // use these to weight entire solution (not just component we're estimating)
+        for (int t=Start;t<Start+T;t++) {
+          for (int k=0;k<dim;k++) {
+    	    for (int i=0;i<4;i++ ) {
+  	      ws[t][i]+= weight[k][i]*all_ts[k][t][i];
+  	    }
+  	  }
+        }
       }
-
+  
       // write it out.
-      for (int t=0;t<T;t++) {
+      for (int t=0;t<allT;t++) {
 	for (int i=0;i<4;i++) {
 	  *outfile << setprecision(13) << setw(20) << ws[t][i];
 	}
@@ -751,18 +783,33 @@ int main(int argc, char *argv[])
       }  // End of 'while( roffs >> rod )'
       cerr << combolist.ComboSolutions.size() << " combination solutions stored" << endl;
 
+      double reg = 0.01; // regularisation factor \lambda
+      int ts_size=5;
+      int totalT = 100;
+
+      char outdirstr[100];
+      sprintf(outdirstr,"Slice%dReg%f_",ts_size,reg);
+      //boost::filesystem::create_directories(outdirstr);
+      string outdir(outdirstr);
+
+
+
       ostream * varoutfile;
       ostream * biasoutfile;
       string biasfilename("bias_output");
-      biasoutfile = new fstream((biasfilename+".txt").c_str(), fstream::out);
+      biasoutfile = new fstream((outdir+biasfilename+".txt").c_str(), fstream::out);
       string varfilename("variance_output");
-      varoutfile = new fstream((varfilename+".txt").c_str(), fstream::out);
-      combolist.calculateBiases(biasoutfile,varoutfile);
+      varoutfile = new fstream((outdir+varfilename+".txt").c_str(), fstream::out);
+      
+      combolist.initBiasVariance(495,ts_size,totalT);
+      combolist.readTimeSeries();
+      for (int slice=0;slice<totalT/ts_size;slice++)
+        combolist.calculateBiases(slice,biasoutfile,varoutfile);
       
       ostream * outfile;
       string filename("bestoutput");
-      outfile = new fstream((filename+".txt").c_str(), fstream::out);
-      combolist.bestSolution(outfile);
+      outfile = new fstream((outdir+filename+".txt").c_str(), fstream::out);
+      combolist.bestSolution(reg,outfile);
       
 
    }
